@@ -127,7 +127,7 @@ abstract contract Context {
 */
 abstract contract Managed is Context
 {
-    event OwnershipTransfered(address indexed previousOwner, address indexed newOwner);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
     event ManagementTransferred(address indexed previousManager, address indexed newManager);
 
     address private _owner;
@@ -203,7 +203,7 @@ abstract contract Managed is Context
     {
         address oldOwner = _owner;
         _owner = newOwner;
-        emit OwnershipTransfered(oldOwner, newOwner);
+        emit OwnershipTransferred(oldOwner, newOwner);
     }
 
     /**
@@ -323,13 +323,15 @@ abstract contract Lockable is Managed
 contract ERC20 is Context, IERC20, Managed, Lockable
 {
     event Burn(address indexed from, uint256 amount);
-    event Release(address indexed to1, address indexed to2, uint256 amount);
+    event Release(address indexed to1, address indexed to2, address indexed to3, uint256 amount);
     event Halving(uint256 oldReleaseAmount, uint256 newReleaseAmount);
     event ReleaseAddressChanged(address indexed oldAddress, address indexed newAddress);
+    event BurnApproval(address indexed owner, address indexed spender, uint256 value);
 
     mapping(address => uint256) private _balances;
 
     mapping(address => mapping(address => uint256)) private _allowances;
+    mapping(address => mapping(address => uint256)) private _burnAllowances;
 
     uint256 private _totalSupply;
     string private _name;
@@ -341,15 +343,15 @@ contract ERC20 is Context, IERC20, Managed, Lockable
     uint256 private _nextReducementDate;
     address private _releaseAddress1;
     address private _releaseAddress2;
+    address private _releaseAddress3;
 
-    uint256 private _week = 600000; // 10 000 minutes
-    uint256 private _4years = 126000000; // 2 100 000 minutes
+    uint256 private constant _week = 600000; // 10 000 minutes
+    uint256 private constant _4years = 126000000; // 2 100 000 minutes
 
     /**
     * @dev Sets the values for {owner}, {manager} and {initialDepositAddress}.
     *
-    * Sets the {_releaseAmount} to 50000 coins, and timestamp for {_nextReleaseDate} and {_nextReducementDate}.
-    * Sends first released amount to the {initialDepositAddress}, and locks the remaining supply within contract.
+    * Sends first released amount to the {initialDepositAddress1, initialDepositAddress2, initialDepositAddress3}, and locks the remaining supply within contract.
     *
     * The default value of {decimals} is 18. To select a different value for
     * {decimals} you should overload it.
@@ -357,11 +359,14 @@ contract ERC20 is Context, IERC20, Managed, Lockable
     * All values for token parameters are immutable: they can only be set once during
     * construction.
     */
-    constructor(string memory name_, string memory symbol_, uint8 decimals_, address owner_, address manager_, address initialDepositAddress1, address initialDepositAddress2) Managed(owner_, manager_)
+    constructor(string memory name_, string memory symbol_, uint8 decimals_, address owner_, address manager_, address initialDepositAddress1, address initialDepositAddress2, address initialDepositAddress3) Managed(owner_, manager_)
     {
-        require(initialDepositAddress1 != address(0), "Initial unlock address can't be a zero address");
-        require(initialDepositAddress2 != address(0), "Initial unlock address can't be a zero address");
+        require(initialDepositAddress1 != address(0), "Initial release address can't be a zero address");
+        require(initialDepositAddress2 != address(0), "Initial release address can't be a zero address");
+        require(initialDepositAddress3 != address(0), "Initial release address can't be a zero address");
         require(initialDepositAddress1 != initialDepositAddress2, "Initial addresses can't be the same");
+        require(initialDepositAddress2 != initialDepositAddress3, "Initial addresses can't be the same");
+        require(initialDepositAddress3 != initialDepositAddress1, "Initial addresses can't be the same");
 
         _name = name_;
         _symbol = symbol_;
@@ -378,12 +383,16 @@ contract ERC20 is Context, IERC20, Managed, Lockable
 
         _releaseAddress1 = initialDepositAddress1;
         _releaseAddress2 = initialDepositAddress2;
-        _balances[initialDepositAddress1] = _releaseAmount*8/10;
-        _balances[initialDepositAddress2] = _releaseAmount*2/10;
-        
+        _releaseAddress3 = initialDepositAddress3;
+
+        _balances[initialDepositAddress1] = _releaseAmount*72/100;
+        _balances[initialDepositAddress2] = _releaseAmount*8/100;
+        _balances[initialDepositAddress3] = _releaseAmount*20/100;
+
         emit Transfer(address(0), initialDepositAddress1, _balances[initialDepositAddress1]);
         emit Transfer(address(0), initialDepositAddress2, _balances[initialDepositAddress2]);
-        emit Release(initialDepositAddress1, initialDepositAddress2, _balances[initialDepositAddress1] + _balances[initialDepositAddress2]);
+        emit Transfer(address(0), initialDepositAddress3, _balances[initialDepositAddress3]);
+        emit Release(initialDepositAddress1, initialDepositAddress2, initialDepositAddress3, _releaseAmount);
     }
 
     /**
@@ -457,6 +466,10 @@ contract ERC20 is Context, IERC20, Managed, Lockable
         return _allowances[owner][spender];
     }
 
+    function burnAllowance(address owner, address spender) public view returns (uint256) {
+        return _burnAllowances[owner][spender];
+    }
+
     /**
     * @dev See {IERC20-approve}.
     *
@@ -466,6 +479,16 @@ contract ERC20 is Context, IERC20, Managed, Lockable
     */
     function approve(address spender, uint256 amount) external virtual override returns (bool) {
         _approve(_msgSender(), spender, amount);
+        return true;
+    }
+
+    /**
+    * Requirements:
+    *
+    * - `spender` cannot be the zero address.
+    */
+    function burnApprove(address spender, uint256 amount) external returns (bool) {
+        _burnApprove(_msgSender(), spender, amount);
         return true;
     }
 
@@ -510,15 +533,15 @@ contract ERC20 is Context, IERC20, Managed, Lockable
     *
     * Requirements:
     *
-    * - the caller must have allowance for `accounts`'s tokens of at least
+    * - the caller must have burnAllowance for `accounts`'s tokens of at least
     * `amount`.
     */
     function burnFrom(address account, uint256 amount) external virtual
     {
-        uint256 currentAllowance = allowance(account, _msgSender());
-        require(currentAllowance >= amount, "ERC20: burn amount exceeds allowance");
+        uint256 currentBurnAllowance = burnAllowance(account, _msgSender());
+        require(currentBurnAllowance >= amount, "ERC20: burn amount exceeds allowance");
         unchecked {
-            _approve(account, _msgSender(), currentAllowance - amount);
+            _burnApprove(account, _msgSender(), currentBurnAllowance - amount);
         }
         _burn(account, amount);
     }
@@ -537,6 +560,18 @@ contract ERC20 is Context, IERC20, Managed, Lockable
     */
     function increaseAllowance(address spender, uint256 addedValue) external virtual returns (bool) {
         _approve(_msgSender(), spender, _allowances[_msgSender()][spender] + addedValue);
+        return true;
+    }
+
+    /**
+    * @dev Atomically increases the burnAllowance granted to `spender` by the caller.
+    *
+    * Requirements:
+    *
+    * - `spender` cannot be the zero address.
+    */
+    function increaseBurnAllowance(address spender, uint256 addedValue) external virtual returns (bool) {
+        _burnApprove(_msgSender(), spender, _burnAllowances[_msgSender()][spender] + addedValue);
         return true;
     }
 
@@ -563,6 +598,28 @@ contract ERC20 is Context, IERC20, Managed, Lockable
 
         return true;
     }
+
+    /**
+    * @dev Atomically decreases the burnAllowance granted to `spender` by the caller.
+
+    *
+    * Emits an {BurnApproval} event indicating the updated burnAllowance.
+    *
+    * Requirements:
+    *
+    * - `spender` cannot be the zero address.
+    * - `spender` must have allowance for the caller of at least
+    * `subtractedValue`.
+    */
+    function decreaseBurnAllowance(address spender, uint256 subtractedValue) external virtual returns (bool) {
+        uint256 currentBurnAllowance = _burnAllowances[_msgSender()][spender];
+        require(currentBurnAllowance >= subtractedValue, "ERC20: decreased burnAllowance below zero");
+        unchecked {
+            _burnApprove(_msgSender(), spender, currentBurnAllowance - subtractedValue);
+        }
+
+        return true;
+    }
     /**
     * @dev Sets {_releaseAddress1} to {newReleaseAddress}.
     * Emits a {ReleaseAddressChanged} event containing old and a new release addresses.
@@ -570,7 +627,10 @@ contract ERC20 is Context, IERC20, Managed, Lockable
     function setReleaseAddress1(address newReleaseAddress) external onlyOwner
     {
         require(newReleaseAddress != address(0), "New release address can't be a zero address");
+        require(newReleaseAddress != _releaseAddress1, "New release address can't be same as _releaseAddress1");
         require(newReleaseAddress != _releaseAddress2, "New release address can't be same as _releaseAddress2");
+        require(newReleaseAddress != _releaseAddress3, "New release address can't be same as _releaseAddress3");
+
         address oldAddress = _releaseAddress1;
         _releaseAddress1 = newReleaseAddress;
         emit ReleaseAddressChanged(oldAddress, _releaseAddress1);
@@ -583,10 +643,30 @@ contract ERC20 is Context, IERC20, Managed, Lockable
     function setReleaseAddress2(address newReleaseAddress) external onlyOwner
     {
         require(newReleaseAddress != address(0), "New release address can't be a zero address");
-        require(newReleaseAddress != _releaseAddress1, "New release address can't be same as _releaseAddress2");
+        require(newReleaseAddress != _releaseAddress1, "New release address can't be same as _releaseAddress1");
+        require(newReleaseAddress != _releaseAddress2, "New release address can't be same as _releaseAddress2");
+        require(newReleaseAddress != _releaseAddress3, "New release address can't be same as _releaseAddress3");
+
         address oldAddress = _releaseAddress2;
         _releaseAddress2 = newReleaseAddress;
         emit ReleaseAddressChanged(oldAddress, _releaseAddress2);
+    }
+
+    /**
+* @dev Sets {_releaseAddress3} to {newReleaseAddress}.
+    *
+    * Emits a {ReleaseAddressChanged} event containing old and a new release addresses.
+    */
+    function setReleaseAddress3(address newReleaseAddress) external onlyOwner
+    {
+        require(newReleaseAddress != address(0), "New release address can't be a zero address");
+        require(newReleaseAddress != _releaseAddress1, "New release address can't be same as _releaseAddress1");
+        require(newReleaseAddress != _releaseAddress2, "New release address can't be same as _releaseAddress2");
+        require(newReleaseAddress != _releaseAddress3, "New release address can't be same as _releaseAddress3");
+
+        address oldAddress = _releaseAddress3;
+        _releaseAddress3 = newReleaseAddress;
+        emit ReleaseAddressChanged(oldAddress, _releaseAddress3);
     }
 
     /**
@@ -594,7 +674,7 @@ contract ERC20 is Context, IERC20, Managed, Lockable
     * If multiple weeks have passed, releases all the coins that should be
     * released within those weeks.
     *
-    * Emits a {Release} event containing the address {_releaseAddress1, _releaseAddress2} the coins were released to,
+    * Emits a {Release} event containing the address {_releaseAddress1, _releaseAddress2, _releaseAddress3} the coins were released to,
     * and the amount {toRelease} of coins the function released.
     */
     function release() external ownerOrManager
@@ -608,9 +688,10 @@ contract ERC20 is Context, IERC20, Managed, Lockable
         while((currentRelease = _calculateReleaseAmount()) > 0)
         { toRelease += currentRelease; }
 
-        _transfer(address(this), _releaseAddress1, toRelease*8/10);
-        _transfer(address(this), _releaseAddress2, toRelease*2/10);
-        emit Release(_releaseAddress1, _releaseAddress2 , toRelease);
+        _transfer(address(this), _releaseAddress1, toRelease*72/100);
+        _transfer(address(this), _releaseAddress2, toRelease*8/100);
+        _transfer(address(this), _releaseAddress3, toRelease*20/100);
+        emit Release(_releaseAddress1, _releaseAddress2, _releaseAddress3, toRelease);
     }
 
     /**
@@ -634,7 +715,7 @@ contract ERC20 is Context, IERC20, Managed, Lockable
             _nextReducementDate += _4years;
 
             uint256 oldReleaseAmount = _releaseAmount;
-            _releaseAmount = (_releaseAmount * 500000) / 1000000;
+            _releaseAmount = _releaseAmount / 2;
 
             emit Halving(oldReleaseAmount, _releaseAmount);
         }
@@ -692,6 +773,25 @@ contract ERC20 is Context, IERC20, Managed, Lockable
 
         _allowances[owner][spender] = amount;
         emit Approval(owner, spender, amount);
+    }
+
+
+    /**
+    * @dev Sets `amount` as the allowance of `spender` over the `owner` s tokens.
+    *
+    * Emits an {BurnApproval} event.
+    *
+    * Requirements:
+    *
+    * - `owner` cannot be the zero address.
+    * - `spender` cannot be the zero address.
+    */
+    function _burnApprove(address owner, address spender, uint256 amount) internal virtual {
+        require(owner != address(0), "burnApprove from the zero address");
+        require(spender != address(0), "burnApprove to the zero address");
+
+        _burnAllowances[owner][spender] = amount;
+        emit BurnApproval(owner, spender, amount);
     }
 
     /**
