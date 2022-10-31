@@ -441,6 +441,14 @@ contract ERC20 is Context, IERC20, Managed, Lockable
     }
 
     /**
+    * @dev Returns real current supply without the locked tokens
+    */
+    function currentSupply() view public returns(uint256) {
+        return _totalSupply - _balances[address(this)];
+    }
+
+
+    /**
     * @dev See {IERC20-balanceOf}.
     */
     function balanceOf(address account) public view virtual override returns (uint256) {
